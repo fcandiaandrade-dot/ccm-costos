@@ -236,7 +236,7 @@
 // Fix iOS touch events
 document.addEventListener('touchstart', function(){}, {passive:true});
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbzmLLgZKmxe7_g6pxqLHHCmfHUXgdgYTtw4YKQEVBZCmZ5I0Ufc1HQ0dUYZxyH44CfR/exec?data=1';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwSrKi1dkyP7ox_75Mpj8XacoD0Kdnv0o17_9WYij11ymXr2EwO-fxn_Pl9R4knLK95/exec';
 // Ejemplo: 'https://script.google.com/macros/s/AKfy.../exec'
 
 const COLORES_CAT = [
@@ -339,6 +339,20 @@ function mostrarError(msg) {
 function renderTodo() {
   const d = DATA;
   document.getElementById('upd-label').textContent = d.meta.actualizado || '—';
+  // Compatibilidad nueva API
+  if (!d.meta.labelMesActual) d.meta.labelMesActual = (d.meta.mes || '') + ' ' + (d.meta.anio || '');
+  if (!d.ultimos12) d.ultimos12 = [];
+  if (!d.alertas) {
+    d.alertas = [];
+    const r = d.resumen;
+    if (r.totalPend > 500000) d.alertas.push({nivel:'rojo', titulo:'Pagos pendientes urgentes', desc:'Supera $500.000 pendiente', monto: r.totalPend});
+    else if (r.totalPend > 100000) d.alertas.push({nivel:'amarillo', titulo:'Pagos pendientes', desc:'Revisar pagos del mes', monto: r.totalPend});
+    if (d.secciones) d.secciones.forEach(s => {
+      if (s.pend > 200000) d.alertas.push({nivel:'amarillo', titulo:s.nombre+' pendiente', desc:'Revisar pagos', monto: s.pend});
+    });
+    if (d.alertas.length === 0) d.alertas.push({nivel:'verde', titulo:'Todo en orden', desc:'Sin alertas activas este mes', monto:0});
+  }
+  if (!d.proyeccion) d.proyeccion = { promedio: d.resumen.totalMes, tendencia: 0, proximo: d.resumen.totalMes, en3meses: d.resumen.totalMes*3, en6meses: d.resumen.totalMes*6 };
   renderResumen(d);
   renderCategorias(d);
   renderMeses(d);
@@ -355,7 +369,7 @@ function renderResumen(d) {
   const estadoBadge = varPct > 0.2 ? '🔴 Alerta' : varPct > 0.1 ? '🟡 Atención' : '🟢 Normal';
   
   document.getElementById('saludo').textContent = saludo() + ', Fredy y Francisca 👋';
-  document.getElementById('sub-saludo').textContent = `${d.meta.labelMesActual} · ${d.meta.totalRegistros} gastos registrados`;
+  document.getElementById('sub-saludo').textContent = `${d.meta.labelMesActual || (d.meta.mes+' '+d.meta.anio)} · ${d.meta.totalRegistros} gastos registrados`;
   
   let html = `
     <div class="card">
@@ -403,7 +417,7 @@ function renderResumen(d) {
     </div>`;
   
   // Alertas
-  d.alertas.forEach(a => {
+  (d.alertas || []).forEach(a => {
     const icon = a.nivel === 'rojo' ? '🔴' : a.nivel === 'amarillo' ? '🟡' : '🟢';
     const mc = a.nivel === 'rojo' ? 'rojo' : a.nivel === 'amarillo' ? 'amarillo' : '';
     html += `
@@ -435,7 +449,7 @@ function renderResumen(d) {
   document.getElementById('resumen-content').innerHTML = html;
   
   // Dibujar gráfico
-  const reales   = d.ultimos12.map(m => m.total > 0 ? m.total : null);
+  const reales   = (d.ultimos12 || []).map(m => m.total > 0 ? m.total : null);
   const proyects = d.ultimos12.map((m,i) => {
     if (i < d.ultimos12.length - 1) return null;
     return d.proyeccion.proximo;
@@ -481,33 +495,55 @@ function dibujarChartTend(d) {
 
 // ── RENDER CATEGORÍAS ───────────────────────────────────────────────
 function renderCategorias(d) {
-  const total = d.resumen.totalMes;
-  document.getElementById('cat-sub').textContent = `${d.meta.labelMesActual} 2026 · Total ${fmt(total)}`;
+  const total = d.resumen.totalMes || d.resumen.totalMes;
+  const labelMes = d.meta.labelMesActual || (d.meta.mes + ' ' + d.meta.anio);
+  document.getElementById('cat-sub').textContent = `${labelMes} · Total ${fmt(total)}`;
   
-  const sorted = [...d.porCategoria].sort((a,b) => b.monto - a.monto);
-  const maxMonto = sorted[0]?.monto || 1;
+  // Soporta tanto estructura nueva (secciones) como vieja (porCategoria)
+  let items = [];
+  if (d.secciones && d.secciones.length > 0) {
+    items = d.secciones.map((s,i) => ({
+      nombre: s.nombre,
+      monto: s.total,
+      pend: s.pend,
+      color: s.color || COLORES_CAT[i % COLORES_CAT.length],
+      pct: total > 0 ? s.total / total : 0
+    }));
+  } else if (d.porCategoria) {
+    items = d.porCategoria.map((c,i) => ({
+      nombre: c.cat,
+      monto: c.monto,
+      pend: c.pend,
+      color: COLORES_CAT[i % COLORES_CAT.length],
+      pct: c.pct
+    }));
+  }
+  
+  items = items.filter(c => c.monto > 0).sort((a,b) => b.monto - a.monto);
+  const maxMonto = items[0]?.monto || 1;
   
   let html = '';
-  sorted.forEach((c, i) => {
+  items.forEach((c, i) => {
     const pct = Math.round(c.pct * 100);
     const barW = Math.round((c.monto / maxMonto) * 100);
+    const pendBadge = c.pend > 0 ? `<span style="font-size:10px;color:#C0392B;margin-left:4px">Pend: ${fmt(c.pend)}</span>` : '';
     html += `
       <div class="cat-row">
-        <div class="cat-dot" style="background:${COLORES_CAT[i % COLORES_CAT.length]}"></div>
-        <div class="cat-name">${c.cat}</div>
-        <div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${COLORES_CAT[i % COLORES_CAT.length]}"></div></div>
+        <div class="cat-dot" style="background:${c.color}"></div>
+        <div class="cat-name">${c.nombre}${pendBadge}</div>
+        <div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${c.color}"></div></div>
         <div class="cat-pct">${pct}%</div>
         <div class="cat-amount">${fmt(c.monto)}</div>
       </div>`;
   });
   
-  if (!sorted.length) html = '<div style="text-align:center;padding:24px;color:#999;font-size:14px">Sin datos este mes</div>';
+  if (!items.length) html = '<div style="text-align:center;padding:24px;color:#999;font-size:14px">Sin datos este mes — la administradora aún no ha ingresado montos</div>';
   document.getElementById('cat-content').innerHTML = html;
 }
 
 // ── RENDER MESES ────────────────────────────────────────────────────
 function renderMeses(d) {
-  const meses = d.ultimos12.filter(m => m.total > 0);
+  const meses = (d.ultimos12 || []).filter(m => m.total > 0);
   const maxMonto = Math.max(...meses.map(m => m.total), 1);
   const total2026 = meses.reduce((s,m) => s + m.total, 0);
   
@@ -578,7 +614,7 @@ function dibujarChartMes(d) {
 
 // ── RENDER PROYECCIÓN ───────────────────────────────────────────────
 function renderProyeccion(d) {
-  const p = d.proyeccion;
+  const p = d.proyeccion || { promedio:0, tendencia:0, proximo:0, en3meses:0, en6meses:0 };
   const tendSign = p.tendencia >= 0 ? '+' : '';
   
   let html = `
@@ -639,8 +675,8 @@ function renderProyeccion(d) {
 }
 
 function dibujarChartProy(d) {
-  const p = d.proyeccion;
-  const reales3 = d.ultimos12.map(m => m.total > 0 ? m.total : null);
+  const p = d.proyeccion || { promedio:0, tendencia:0, proximo:0, en3meses:0, en6meses:0 };
+  const reales3 = (d.ultimos12 || []).map(m => m.total > 0 ? m.total : null);
   const lastReal3 = reales3.filter(v => v !== null).pop();
   const labelsProj3 = [...d.ultimos12.map(m => m.label), 'Jun', 'Jul', 'Ago'];
   const realArr3   = [...reales3, null, null, null];
